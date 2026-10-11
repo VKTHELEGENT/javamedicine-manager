@@ -75,6 +75,9 @@ function saveMockSession(user) {
 
 // --- Dynamic API Base URL & Network Client ---
 function getApiBaseUrl() {
+    if (window.API_BASE_URL) return window.API_BASE_URL;
+    const customUrl = localStorage.getItem('mediflow_api_url');
+    if (customUrl) return customUrl.replace(/\/$/, '');
     if (window.location.protocol === 'file:') {
         return 'http://localhost:8080';
     }
