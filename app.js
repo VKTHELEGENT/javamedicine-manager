@@ -89,12 +89,17 @@ function getApiBaseUrl() {
 
 async function apiFetch(path, options = {}) {
     const url = path.startsWith('http') ? path : `${getApiBaseUrl()}${path}`;
+    const headers = {
+        ...options.headers
+    };
+    if (APP_STATE.sessionUser && APP_STATE.sessionUser.type) {
+        headers['X-User-Role'] = APP_STATE.sessionUser.type;
+        headers['X-User-Name'] = APP_STATE.sessionUser.username;
+    }
     const opts = {
         credentials: 'include',
         ...options,
-        headers: {
-            ...options.headers
-        }
+        headers
     };
     return fetch(url, opts);
 }
@@ -119,13 +124,22 @@ async function checkSession() {
             const data = await response.json();
             APP_STATE.mode = 'online';
             APP_STATE.sessionUser = { username: data.username, type: data.type };
+            saveMockSession(APP_STATE.sessionUser);
             updateHeaderUserMenu();
             navigateToScreen(data.type);
             console.log("Connected to Java Back-end: Spring Boot session verified.");
         } else if (response.status === 401) {
             // Spring Boot backend is responding, ready for user authentication
             APP_STATE.mode = 'online';
-            navigateToScreen('auth');
+            const mockUser = getMockSession();
+            if (mockUser) {
+                APP_STATE.sessionUser = mockUser;
+                updateHeaderUserMenu();
+                navigateToScreen(mockUser.type);
+                console.log("Restored active session for " + mockUser.username);
+            } else {
+                navigateToScreen('auth');
+            }
             console.log("Connected to Java Back-end: Spring Boot active.");
         } else {
             throw new Error(`Unexpected status code: ${response.status}`);
@@ -433,6 +447,7 @@ async function handleAuthSubmit(e) {
                 const data = await res.json().catch(() => ({}));
                 if (res.ok) {
                     APP_STATE.sessionUser = { username: data.username, type: data.type };
+                    saveMockSession(APP_STATE.sessionUser);
                     updateHeaderUserMenu();
                     showToast("Account Created", "Successfully registered in database.", "success");
                     navigateToScreen('patient');
@@ -448,6 +463,7 @@ async function handleAuthSubmit(e) {
                 const data = await res.json().catch(() => ({}));
                 if (res.ok) {
                     APP_STATE.sessionUser = { username: data.username, type: data.type };
+                    saveMockSession(APP_STATE.sessionUser);
                     updateHeaderUserMenu();
                     showToast("Success", "Authenticated via server database.", "success");
                     navigateToScreen(data.type);
@@ -924,20 +940,20 @@ async function renderFacultyDashboard() {
             } else {
                 const localMeds = getLocalMedicines();
                 meds = query 
-                    ? localMeds.filter(m => m.name.toLowerCase().includes(query.toLowerCase()))
+                    ? localMeds.filter(m => (m.name && m.name.toLowerCase().includes(query.toLowerCase())) || (m.details && m.details.toLowerCase().includes(query.toLowerCase())))
                     : localMeds;
             }
         } catch (err) {
             console.warn("Faculty fetch online failed, falling back to local:", err);
             const localMeds = getLocalMedicines();
             meds = query 
-                ? localMeds.filter(m => m.name.toLowerCase().includes(query.toLowerCase()))
+                ? localMeds.filter(m => (m.name && m.name.toLowerCase().includes(query.toLowerCase())) || (m.details && m.details.toLowerCase().includes(query.toLowerCase())))
                 : localMeds;
         }
     } else {
         const localMeds = getLocalMedicines();
         meds = query 
-            ? localMeds.filter(m => m.name.toLowerCase().includes(query.toLowerCase()))
+            ? localMeds.filter(m => (m.name && m.name.toLowerCase().includes(query.toLowerCase())) || (m.details && m.details.toLowerCase().includes(query.toLowerCase())))
             : localMeds;
     }
 
@@ -998,21 +1014,21 @@ async function renderFacultyDashboard() {
                     <div class="management-controls">
                         <div class="control-label">Inventory Level (Strips):</div>
                         <div class="qty-stepper-box">
-                            <button class="stepper-btn" onclick="modifyQuantityStep(${m.id}, ${m.quantity}, -1)">-</button>
-                            <input type="number" class="stepper-input" value="${m.quantity}" min="0" onchange="modifyQuantityInput(${m.id}, this.value)">
-                            <button class="stepper-btn" onclick="modifyQuantityStep(${m.id}, ${m.quantity}, 1)">+</button>
+                            <button type="button" class="stepper-btn" onclick="modifyQuantityStep(${m.id}, -1)">-</button>
+                            <input type="number" id="qty-input-${m.id}" class="stepper-input" value="${m.quantity}" min="0" onchange="modifyQuantityInput(${m.id}, this.value)">
+                            <button type="button" class="stepper-btn" onclick="modifyQuantityStep(${m.id}, 1)">+</button>
                         </div>
                     </div>
 
                     <div style="margin-top: 1rem;">
-                        <button class="btn btn-secondary btn-block btn-small" onclick="toggleAvailability(${m.id}, ${m.available})">
+                        <button type="button" class="btn btn-secondary btn-block btn-small" onclick="toggleAvailability(${m.id}, ${m.available})">
                             ${m.available ? 'Mark Out of Stock' : 'Mark Available'}
                         </button>
                     </div>
 
                     <div class="card-action-keys">
-                        <button class="btn btn-secondary btn-small" style="flex:1;" onclick="openEditMedicineModal(${m.id})">Edit Details</button>
-                        <button class="btn btn-danger btn-small" onclick="promptDeleteMedicine(${m.id})">Delete</button>
+                        <button type="button" class="btn btn-secondary btn-small" style="flex:1;" onclick="openEditMedicineModal(${m.id})">Edit Details</button>
+                        <button type="button" class="btn btn-danger btn-small" onclick="promptDeleteMedicine(${m.id})">Delete</button>
                     </div>
                 </div>
             `;
@@ -1094,16 +1110,17 @@ async function handleRegisterMedicineSubmit(e) {
 
 // --- Medicine updates ---
 async function toggleAvailability(id, currentStat) {
+    const newStatus = (currentStat === true || currentStat === 'true') ? false : true;
     if (APP_STATE.mode === 'online') {
         try {
             const res = await apiFetch(`/api/medicines/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ available: !currentStat })
+                body: JSON.stringify({ available: newStatus })
             });
             if (res.ok) {
                 renderFacultyDashboard();
-                showToast("Visibility Changed", "Stock visibility adjusted.", "success");
+                showToast("Visibility Changed", `Stock marked as ${newStatus ? 'Available' : 'Out of Stock'}.`, "success");
             } else {
                 showToast("Action Forbidden", "Access denied.", "danger");
             }
@@ -1112,10 +1129,10 @@ async function toggleAvailability(id, currentStat) {
             const localMeds = getLocalMedicines();
             const item = localMeds.find(m => m.id === id);
             if (item) {
-                item.available = !currentStat;
+                item.available = newStatus;
                 saveLocalMedicines(localMeds);
                 renderFacultyDashboard();
-                showToast("Visibility Changed (Local)", "Stock visibility adjusted.", "success");
+                showToast("Visibility Changed (Local)", `Stock marked as ${newStatus ? 'Available' : 'Out of Stock'}.`, "success");
             }
         }
     } else {
@@ -1123,18 +1140,23 @@ async function toggleAvailability(id, currentStat) {
         const localMeds = getLocalMedicines();
         const item = localMeds.find(m => m.id === id);
         if (item) {
-            item.available = !currentStat;
+            item.available = newStatus;
             saveLocalMedicines(localMeds);
             renderFacultyDashboard();
-            showToast("Visibility Changed (Local)", "Stock visibility adjusted.", "success");
+            showToast("Visibility Changed (Local)", `Stock marked as ${newStatus ? 'Available' : 'Out of Stock'}.`, "success");
         }
     }
 }
 
-async function modifyQuantityStep(id, currentQty, step) {
-    const nextVal = currentQty + step;
-    if (nextVal < 0) return;
-    
+async function modifyQuantityStep(id, step) {
+    const input = document.getElementById(`qty-input-${id}`);
+    let currentQty = input ? parseInt(input.value) : null;
+    if (currentQty === null || isNaN(currentQty)) {
+        const item = (APP_STATE.facultyLoadedMeds || []).find(m => m.id === id);
+        currentQty = item ? item.quantity : 0;
+    }
+    const nextVal = Math.max(0, currentQty + step);
+    if (input) input.value = nextVal;
     await updateQuantityValueOnServer(id, nextVal);
 }
 

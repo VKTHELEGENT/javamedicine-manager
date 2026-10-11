@@ -1,7 +1,10 @@
 package com.mediflow.pharmacy.controller;
 
 import com.mediflow.pharmacy.model.Medicine;
+import com.mediflow.pharmacy.model.User;
 import com.mediflow.pharmacy.repository.MedicineRepository;
+import com.mediflow.pharmacy.repository.UserRepository;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -20,9 +23,30 @@ public class MedicineController {
     @Autowired
     private MedicineRepository medicineRepository;
 
-    private boolean isFaculty(HttpSession session) {
-        String role = (String) session.getAttribute("role");
-        return "faculty".equalsIgnoreCase(role);
+    @Autowired
+    private UserRepository userRepository;
+
+    private boolean isFaculty(HttpSession session, HttpServletRequest request) {
+        if (session != null) {
+            String role = (String) session.getAttribute("role");
+            if ("faculty".equalsIgnoreCase(role)) {
+                return true;
+            }
+        }
+        if (request != null) {
+            String roleHeader = request.getHeader("X-User-Role");
+            if ("faculty".equalsIgnoreCase(roleHeader)) {
+                return true;
+            }
+            String userHeader = request.getHeader("X-User-Name");
+            if (userHeader != null && !userHeader.trim().isEmpty()) {
+                Optional<User> userOpt = userRepository.findByUsername(userHeader.trim());
+                if (userOpt.isPresent() && "faculty".equalsIgnoreCase(userOpt.get().getRole())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     @GetMapping
@@ -49,8 +73,8 @@ public class MedicineController {
     }
 
     @PostMapping
-    public ResponseEntity<?> addMedicine(@RequestBody Map<String, Object> request, HttpSession session) {
-        if (!isFaculty(session)) {
+    public ResponseEntity<?> addMedicine(@RequestBody Map<String, Object> request, HttpSession session, HttpServletRequest httpRequest) {
+        if (!isFaculty(session, httpRequest)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "For faculty/staff access only."));
         }
 
@@ -85,8 +109,8 @@ public class MedicineController {
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<?> updateMedicine(@PathVariable("id") Long id, @RequestBody Map<String, Object> request, HttpSession session) {
-        if (!isFaculty(session)) {
+    public ResponseEntity<?> updateMedicine(@PathVariable("id") Long id, @RequestBody Map<String, Object> request, HttpSession session, HttpServletRequest httpRequest) {
+        if (!isFaculty(session, httpRequest)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "For faculty/staff access only."));
         }
 
@@ -131,8 +155,8 @@ public class MedicineController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> deleteMedicine(@PathVariable("id") Long id, HttpSession session) {
-        if (!isFaculty(session)) {
+    public ResponseEntity<?> deleteMedicine(@PathVariable("id") Long id, HttpSession session, HttpServletRequest httpRequest) {
+        if (!isFaculty(session, httpRequest)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "For faculty/staff access only."));
         }
 
