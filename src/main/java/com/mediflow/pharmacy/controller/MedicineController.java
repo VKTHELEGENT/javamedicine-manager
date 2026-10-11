@@ -14,6 +14,7 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/medicines")
+@CrossOrigin(originPatterns = "*", allowCredentials = "true")
 public class MedicineController {
 
     @Autowired
@@ -54,8 +55,10 @@ public class MedicineController {
         }
 
         String name = (String) request.get("name");
-        Integer quantity = (Integer) request.get("quantity");
-        Boolean available = (Boolean) request.get("available");
+        Object qtyRaw = request.get("quantity");
+        Integer quantity = (qtyRaw instanceof Number) ? ((Number) qtyRaw).intValue() : null;
+        Object availRaw = request.get("available");
+        Boolean available = (availRaw instanceof Boolean) ? (Boolean) availRaw : (availRaw != null ? Boolean.parseBoolean(availRaw.toString()) : null);
         String details = (String) request.get("details");
 
         if (name == null || quantity == null || available == null) {
@@ -85,14 +88,19 @@ public class MedicineController {
         }
         if (request.containsKey("quantity")) {
             Object qtyObj = request.get("quantity");
-            if (qtyObj instanceof Integer) {
-                medicine.setQuantity((Integer) qtyObj);
+            if (qtyObj instanceof Number) {
+                medicine.setQuantity(((Number) qtyObj).intValue());
             } else if (qtyObj instanceof String) {
                 medicine.setQuantity(Integer.parseInt((String) qtyObj));
             }
         }
         if (request.containsKey("available")) {
-            medicine.setAvailable((Boolean) request.get("available"));
+            Object availObj = request.get("available");
+            if (availObj instanceof Boolean) {
+                medicine.setAvailable((Boolean) availObj);
+            } else if (availObj instanceof String) {
+                medicine.setAvailable(Boolean.parseBoolean((String) availObj));
+            }
         }
         if (request.containsKey("details")) {
             medicine.setDetails((String) request.get("details"));

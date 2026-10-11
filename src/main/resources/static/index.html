@@ -115,6 +115,14 @@
 
                         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1rem;"
                             id="btn-auth-submit">Sign In</button>
+
+                        <div class="demo-creds-box" style="margin-top: 1.25rem; padding: 0.75rem; background: var(--bg-app); border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 0.8rem; text-align: center; color: var(--text-muted);">
+                            <div style="font-weight: 600; margin-bottom: 0.4rem; color: var(--text-primary);">Demo Accounts (Click to Auto-fill):</div>
+                            <div style="display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap;">
+                                <button type="button" class="btn btn-secondary btn-small" style="font-size: 0.75rem; padding: 0.25rem 0.6rem;" onclick="fillDemoCreds('patient')">👤 Patient (patient1)</button>
+                                <button type="button" class="btn btn-secondary btn-small" style="font-size: 0.75rem; padding: 0.25rem 0.6rem;" onclick="fillDemoCreds('faculty')">👨‍⚕️ Faculty (admin)</button>
+                            </div>
+                        </div>
                     </form>
                 </div>
             </div>
@@ -223,7 +231,9 @@
                             </div>
                             <input type="text" id="patient-search-input" class="form-input search-input-field"
                                 placeholder="Type medicine name (e.g. Paracetamol, Ibuprofen...) to autocomplete..."
-                                autocomplete="off">
+                                autocomplete="off"
+                                onclick="handlePatientSearchFocus(this)"
+                                onfocus="handlePatientSearchFocus(this)">
                         </div>
                     </div>
                     <!-- Custom autocomplete dropdown list -->
@@ -329,8 +339,15 @@
                             </div>
                             <input type="text" id="faculty-search-input" class="form-input search-input-field"
                                 placeholder="Search medicines catalog filter name instantly..."
-                                oninput="handleFacultySearchInput()">
+                                autocomplete="off"
+                                oninput="handleFacultySearchInput(this.value)"
+                                onclick="handleFacultySearchFocus(this)"
+                                onfocus="handleFacultySearchFocus(this)">
                         </div>
+                    </div>
+                    <!-- Custom autocomplete dropdown list for faculty -->
+                    <div class="autocomplete-container" id="faculty-search-autocomplete">
+                        <!-- Filled dynamically -->
                     </div>
                 </div>
 
@@ -374,8 +391,8 @@
                 <div class="modal-details-block" style="margin-top: 1rem;">
                     <p style="margin-bottom: 0.5rem;"><strong>Current Inventory Level:</strong> <span
                             id="modal-detail-quantity">0</span> strips</p>
-                    <p style="margin-bottom: 0.5rem;" id="modal-detail-warning-line" class="badge badge-warning"
-                        style="display:none;">⚠️ warning: stock is running low!</p>
+                    <p id="modal-detail-warning-line" class="badge badge-warning"
+                        style="margin-bottom: 0.5rem; display: none;">⚠️ warning: stock is running low!</p>
                 </div>
 
                 <div style="margin-top: 1.5rem;">

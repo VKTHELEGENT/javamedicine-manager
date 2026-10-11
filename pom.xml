@@ -12,10 +12,10 @@
     <artifactId>pharmacy</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>pharmacy</name>
-    <description>MediFlow Pharmacy Management System Java MySQL Backend</description>
+    <description>MediFlow Pharmacy Management System Java Backend</description>
     <properties>
-        <java.version>25</java.version>
-        <maven.compiler.release>25</maven.compiler.release>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
     </properties>
     <dependencies>
         <!-- Spring Boot Starters -->

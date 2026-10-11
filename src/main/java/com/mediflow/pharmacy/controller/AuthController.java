@@ -20,6 +20,7 @@ import java.util.Random;
 
 @RestController
 @RequestMapping("/api/auth")
+@CrossOrigin(originPatterns = "*", allowCredentials = "true")
 public class AuthController {
 
     @Autowired
