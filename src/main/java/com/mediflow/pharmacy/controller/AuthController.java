@@ -31,11 +31,11 @@ public class AuthController {
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> request, HttpSession session) {
-        String username = request.get("username");
+        String username = request.get("username") != null ? request.get("username").trim() : null;
         String password = request.get("password");
-        String role = request.get("role"); // "patient" or "faculty"
+        String role = request.get("role") != null ? request.get("role").trim() : null; // "patient" or "faculty"
 
-        if (username == null || password == null || role == null) {
+        if (username == null || username.isEmpty() || password == null || password.isEmpty() || role == null || role.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Username, password and role are required."));
         }
 
@@ -67,17 +67,17 @@ public class AuthController {
 
     @PostMapping("/register")
     public ResponseEntity<?> register(@RequestBody Map<String, String> request, HttpSession session) {
-        String username = request.get("username");
+        String username = request.get("username") != null ? request.get("username").trim() : null;
         String password = request.get("password");
-        String email = request.get("email");
+        String email = request.get("email") != null ? request.get("email").trim() : "";
         String role = request.get("role"); // Default to PATIENT if not provided or register flow
 
-        if (username == null || password == null) {
+        if (username == null || username.isEmpty() || password == null || password.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Username and password are required."));
         }
 
-        if (role == null) role = "PATIENT";
-        role = role.toUpperCase();
+        if (role == null || role.trim().isEmpty()) role = "PATIENT";
+        role = role.trim().toUpperCase();
 
         Optional<User> checkUser = userRepository.findByUsername(username);
         if (checkUser.isPresent()) {

@@ -15,7 +15,7 @@ A medical pharmacy management web platform designed for patient catalog search, 
 
 ## 🚀 Live Deployment on Vercel
 1. Go to [Vercel](https://vercel.com/new).
-2. Click **"Import Git Repository"** and select `VKTHELEGENT/phaaa`.
+2. Click **"Import Git Repository"** and select `VKTHELEGENT/javamedicine-manager`.
 3. Framework Preset: **Other**.
 4. Root Directory: `./` (default).
 5. Click **Deploy**.

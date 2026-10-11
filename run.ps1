@@ -2,6 +2,18 @@
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 
+# Free port 8080 if an older server instance is still bound to it
+$existingPort = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+if ($existingPort) {
+    $existingPid = $existingPort.OwningProcess | Select-Object -First 1
+    $proc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+    if ($proc -and $proc.ProcessName -eq 'java') {
+        Write-Host "Stopping previous server instance on port 8080 (PID $existingPid)..." -ForegroundColor Yellow
+        Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+}
+
 Write-Host "Compiling Java backend sources..." -ForegroundColor Cyan
 $jars = (Get-ChildItem -Path "$env:USERPROFILE\.m2\repository" -Filter "*.jar" -Recurse | Where-Object { 
     $_.FullName -notmatch "slf4j-api-1\.7" -and 

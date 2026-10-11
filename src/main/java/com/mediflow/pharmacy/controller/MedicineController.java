@@ -54,14 +54,28 @@ public class MedicineController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "For faculty/staff access only."));
         }
 
-        String name = (String) request.get("name");
+        String name = request.get("name") != null ? request.get("name").toString().trim() : null;
         Object qtyRaw = request.get("quantity");
-        Integer quantity = (qtyRaw instanceof Number) ? ((Number) qtyRaw).intValue() : null;
-        Object availRaw = request.get("available");
-        Boolean available = (availRaw instanceof Boolean) ? (Boolean) availRaw : (availRaw != null ? Boolean.parseBoolean(availRaw.toString()) : null);
-        String details = (String) request.get("details");
+        Integer quantity = null;
+        if (qtyRaw instanceof Number) {
+            quantity = ((Number) qtyRaw).intValue();
+        } else if (qtyRaw != null) {
+            try {
+                quantity = Integer.parseInt(qtyRaw.toString().trim());
+            } catch (NumberFormatException ignored) {}
+        }
 
-        if (name == null || quantity == null || available == null) {
+        Object availRaw = request.get("available");
+        Boolean available = null;
+        if (availRaw instanceof Boolean) {
+            available = (Boolean) availRaw;
+        } else if (availRaw != null) {
+            available = Boolean.parseBoolean(availRaw.toString().trim());
+        }
+
+        String details = request.get("details") != null ? request.get("details").toString().trim() : "";
+
+        if (name == null || name.isEmpty() || quantity == null || available == null) {
             return ResponseEntity.badRequest().body(Map.of("error", "Name, quantity and availability are required."));
         }
 
@@ -84,26 +98,32 @@ public class MedicineController {
         Medicine medicine = medOpt.get();
 
         if (request.containsKey("name")) {
-            medicine.setName((String) request.get("name"));
+            Object nameObj = request.get("name");
+            if (nameObj != null) {
+                medicine.setName(nameObj.toString().trim());
+            }
         }
         if (request.containsKey("quantity")) {
             Object qtyObj = request.get("quantity");
             if (qtyObj instanceof Number) {
                 medicine.setQuantity(((Number) qtyObj).intValue());
-            } else if (qtyObj instanceof String) {
-                medicine.setQuantity(Integer.parseInt((String) qtyObj));
+            } else if (qtyObj != null) {
+                try {
+                    medicine.setQuantity(Integer.parseInt(qtyObj.toString().trim()));
+                } catch (NumberFormatException ignored) {}
             }
         }
         if (request.containsKey("available")) {
             Object availObj = request.get("available");
             if (availObj instanceof Boolean) {
                 medicine.setAvailable((Boolean) availObj);
-            } else if (availObj instanceof String) {
-                medicine.setAvailable(Boolean.parseBoolean((String) availObj));
+            } else if (availObj != null) {
+                medicine.setAvailable(Boolean.parseBoolean(availObj.toString().trim()));
             }
         }
         if (request.containsKey("details")) {
-            medicine.setDetails((String) request.get("details"));
+            Object detailsObj = request.get("details");
+            medicine.setDetails(detailsObj != null ? detailsObj.toString().trim() : "");
         }
 
         Medicine updated = medicineRepository.save(medicine);
