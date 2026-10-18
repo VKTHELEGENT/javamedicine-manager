@@ -1,40 +1,37 @@
 package com.mediflow.pharmacy.model;
 
-import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
-@Entity
-@Table(name = "reset_codes")
+/**
+ * CST 205 OOPJ - Module 2: Class, Object, Constructors and Encapsulation
+ * Represents a Password Reset verification code.
+ */
 public class ResetCode {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(nullable = false)
     private String email;
-
-    @Column(nullable = false)
     private String code;
-
-    @Column(nullable = false)
     private LocalDateTime expires;
-
-    @Column(name = "user_type", nullable = false)
     private String userType; // "patient" or "faculty"
-
-    @Column(nullable = false)
     private String username;
 
+    // Default constructor
     public ResetCode() {
     }
 
+    // Parameterized constructor without ID
     public ResetCode(String email, String code, LocalDateTime expires, String userType, String username) {
         this.email = email;
         this.code = code;
         this.expires = expires;
         this.userType = userType;
         this.username = username;
+    }
+
+    // Parameterized constructor with ID
+    public ResetCode(Long id, String email, String code, LocalDateTime expires, String userType, String username) {
+        this(email, code, expires, userType, username);
+        this.id = id;
     }
 
     // Getters and Setters

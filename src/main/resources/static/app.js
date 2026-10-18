@@ -1,8 +1,8 @@
 /**
  * MediFlow - Pharmacy Manager Frontend Logic
  * Supports Hybrid Modes:
- * - Online: Java Spring Boot & Relational Database (http://localhost:8080)
- * - Offline Fallback: LocalStorage database emulation (seamless fallback if server is offline)
+ * - Online: Java Spring Boot & MySQL Relational DB
+ * - Offline Fallback: LocalStorage database emulation (no running server required)
  */
 
 // --- Pre-seeded fallback data ---
@@ -32,10 +32,20 @@ let APP_STATE = {
     activeRoleTab: 'patient', // 'patient' | 'faculty'
     patientMode: 'login',     // 'login' | 'register'
     deleteTargetId: null,     // id of medicine marked for deletion
-    isCollapsibleAddMedOpen: false,
-    patientLoadedMeds: [],
-    facultyLoadedMeds: []
+    isCollapsibleAddMedOpen: false
 };
+
+function getAuthHeaders(includeContentType = true) {
+    const headers = {};
+    if (includeContentType) {
+        headers['Content-Type'] = 'application/json';
+    }
+    if (APP_STATE.sessionUser) {
+        headers['X-User-Role'] = APP_STATE.sessionUser.type;
+        headers['X-User-Name'] = APP_STATE.sessionUser.username;
+    }
+    return headers;
+}
 
 // --- LocalStorage Database Controllers (Offline Mode fallback) ---
 function getLocalMedicines() {
@@ -73,35 +83,47 @@ function saveMockSession(user) {
     }
 }
 
-// --- Dynamic API Base URL & Network Client ---
-function getApiBaseUrl() {
-    if (window.API_BASE_URL) return window.API_BASE_URL;
-    const customUrl = localStorage.getItem('mediflow_api_url');
-    if (customUrl) return customUrl.replace(/\/$/, '');
-    if (window.location.protocol === 'file:') {
-        return 'http://localhost:8080';
+// --- Login Activity Audit Trail (LocalStorage Emulation Fallback) ---
+function getLocalLoginLogs() {
+    if (!localStorage.getItem('mediflow_login_logs')) {
+        const seedLogs = [
+            { id: 1, username: 'patient1', role: 'PATIENT', loginTimeStr: '2026-10-14 00:01:12', ipAddress: '127.0.0.1', status: 'SUCCESS' },
+            { id: 2, username: 'faculty1', role: 'FACULTY', loginTimeStr: '2026-10-14 00:04:45', ipAddress: '127.0.0.1', status: 'SUCCESS' }
+        ];
+        localStorage.setItem('mediflow_login_logs', JSON.stringify(seedLogs));
     }
-    if ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.location.port !== '8080' && window.location.port !== '') {
-        return 'http://localhost:8080';
-    }
-    return '';
+    return JSON.parse(localStorage.getItem('mediflow_login_logs'));
 }
 
-async function apiFetch(path, options = {}) {
-    const url = path.startsWith('http') ? path : `${getApiBaseUrl()}${path}`;
-    const headers = {
-        ...options.headers
+function recordLocalLoginLog(username, role, ipAddress = '127.0.0.1', status = 'SUCCESS') {
+    const logs = getLocalLoginLogs();
+    const now = new Date();
+    const timeStr = now.getFullYear() + '-' +
+        String(now.getMonth() + 1).padStart(2, '0') + '-' +
+        String(now.getDate()).padStart(2, '0') + ' ' +
+        String(now.getHours()).padStart(2, '0') + ':' +
+        String(now.getMinutes()).padStart(2, '0') + ':' +
+        String(now.getSeconds()).padStart(2, '0');
+    const newEntry = {
+        id: logs.length + 1,
+        username: username,
+        role: (role || 'PATIENT').toUpperCase(),
+        loginTimeStr: timeStr,
+        ipAddress: ipAddress,
+        status: status
     };
-    if (APP_STATE.sessionUser && APP_STATE.sessionUser.type) {
-        headers['X-User-Role'] = APP_STATE.sessionUser.type;
-        headers['X-User-Name'] = APP_STATE.sessionUser.username;
-    }
-    const opts = {
-        credentials: 'include',
-        ...options,
-        headers
-    };
-    return fetch(url, opts);
+    logs.unshift(newEntry);
+    localStorage.setItem('mediflow_login_logs', JSON.stringify(logs.slice(0, 100)));
+}
+
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 // --- Initialization ---
@@ -119,33 +141,24 @@ document.addEventListener('DOMContentLoaded', () => {
 // --- Server API Queries & Connectivity Testing ---
 async function checkSession() {
     try {
-        const response = await apiFetch('/api/auth/session');
+        const response = await fetch('/api/auth/session');
         if (response.ok) {
             const data = await response.json();
             APP_STATE.mode = 'online';
             APP_STATE.sessionUser = { username: data.username, type: data.type };
-            saveMockSession(APP_STATE.sessionUser);
             updateHeaderUserMenu();
             navigateToScreen(data.type);
-            console.log("Connected to Java Back-end: Spring Boot session verified.");
-        } else if (response.status === 401) {
-            // Spring Boot backend is responding, ready for user authentication
-            APP_STATE.mode = 'online';
-            const mockUser = getMockSession();
-            if (mockUser) {
-                APP_STATE.sessionUser = mockUser;
-                updateHeaderUserMenu();
-                navigateToScreen(mockUser.type);
-                console.log("Restored active session for " + mockUser.username);
-            } else {
-                navigateToScreen('auth');
-            }
-            console.log("Connected to Java Back-end: Spring Boot active.");
+            console.log("Connected to Java Back-end: MySQL Relational mode active.");
+        } else if (response.status === 404) {
+            // API endpoints are not available on this server, fall back to offline database
+            throw new Error("404 API not found");
         } else {
-            throw new Error(`Unexpected status code: ${response.status}`);
+            // Server responds but session is missing, keep online
+            APP_STATE.mode = 'online';
+            navigateToScreen('auth');
         }
     } catch (error) {
-        console.warn("Backend server not responding. Operating in local offline mode:", error);
+        console.warn("Backend server not responding. Falling back to local offline mode:", error);
         APP_STATE.mode = 'offline';
         
         // Retrieve mock session
@@ -158,62 +171,26 @@ async function checkSession() {
             navigateToScreen('auth');
         }
         
-        showToast("Offline Mode Active", "Backend server not detected (run 'run.bat' for Java server). Operating via LocalStorage.", "info");
+        showToast("Running Local Mode", "No backend server detected. Simulating via browser LocalStorage.", "info");
     }
 }
 
 // --- Event Handlers & Core Bindings ---
 function initEventHandlers() {
-    // Autohide search suggestions when clicking outside
+    // Autohide patient search suggestions when clicking outside
     document.addEventListener('click', (e) => {
-        const patAutocomplete = document.getElementById('patient-search-autocomplete');
-        const patInput = document.getElementById('patient-search-input');
-        if (patAutocomplete && patInput && !patAutocomplete.contains(e.target) && e.target !== patInput) {
-            patAutocomplete.style.display = 'none';
-        }
-
-        const facAutocomplete = document.getElementById('faculty-search-autocomplete');
-        const facInput = document.getElementById('faculty-search-input');
-        if (facAutocomplete && facInput && !facAutocomplete.contains(e.target) && e.target !== facInput) {
-            facAutocomplete.style.display = 'none';
+        const autocomplete = document.getElementById('patient-search-autocomplete');
+        const input = document.getElementById('patient-search-input');
+        if (autocomplete && input && !autocomplete.contains(e.target) && e.target !== input) {
+            autocomplete.style.display = 'none';
         }
     });
 
-    // Close autocomplete on Escape key
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            const patAutocomplete = document.getElementById('patient-search-autocomplete');
-            if (patAutocomplete) patAutocomplete.style.display = 'none';
-            const facAutocomplete = document.getElementById('faculty-search-autocomplete');
-            if (facAutocomplete) facAutocomplete.style.display = 'none';
-        }
-    });
-
-    // Connect patient autocomplete search input
+    // Connect autocomplete search inputs
     const patSearchInput = document.getElementById('patient-search-input');
     if (patSearchInput) {
         patSearchInput.addEventListener('input', () => {
             handlePatientSearchAutocomplete(patSearchInput.value);
-        });
-        patSearchInput.addEventListener('focus', () => {
-            handlePatientSearchFocus(patSearchInput);
-        });
-        patSearchInput.addEventListener('click', () => {
-            handlePatientSearchFocus(patSearchInput);
-        });
-    }
-
-    // Connect faculty interactive stock search input
-    const facSearchInput = document.getElementById('faculty-search-input');
-    if (facSearchInput) {
-        facSearchInput.addEventListener('input', () => {
-            handleFacultySearchInput(facSearchInput.value);
-        });
-        facSearchInput.addEventListener('focus', () => {
-            handleFacultySearchFocus(facSearchInput);
-        });
-        facSearchInput.addEventListener('click', () => {
-            handleFacultySearchFocus(facSearchInput);
         });
     }
 
@@ -267,7 +244,7 @@ function navigateToScreen(target) {
         view.classList.remove('visible');
     });
 
-    let modeText = APP_STATE.mode === 'online' ? 'Server Connected' : 'Offline LocalStorage';
+    let modeText = APP_STATE.mode === 'online' ? 'Cloud Server Connected' : 'Offline LocalStorage';
 
     if (target === 'auth') {
         document.getElementById('screen-auth').classList.add('visible');
@@ -277,7 +254,7 @@ function navigateToScreen(target) {
         resetForgotForm();
     } else if (target === 'patient') {
         document.getElementById('screen-patient-dashboard').classList.add('visible');
-        document.getElementById('patient-dashboard-welcome-msg').textContent = `Welcome back! Access token verified for ${APP_STATE.sessionUser.username}. (${modeText})`;
+        document.getElementById('patient-dashboard-welcome-msg').textContent = `Welcome back! Checked access token verified for ${APP_STATE.sessionUser.username}. (${modeText})`;
         renderPatientDashboard();
     } else if (target === 'faculty') {
         document.getElementById('screen-faculty-dashboard').classList.add('visible');
@@ -309,7 +286,7 @@ function updateHeaderUserMenu() {
         logoutBtn.onclick = async () => {
             if (APP_STATE.mode === 'online') {
                 try {
-                    await apiFetch('/api/auth/logout', { method: 'POST' });
+                    await fetch('/api/auth/logout', { method: 'POST' });
                 } catch (e) {
                     console.error("Logout fetch error", e);
                 }
@@ -356,8 +333,6 @@ function switchPatientMode(mode) {
     APP_STATE.patientMode = mode;
     const emailGroup = document.getElementById('group-register-email');
     const submitBtn = document.getElementById('btn-auth-submit');
-    const radio = document.querySelector(`input[name="auth-mode"][value="${mode}"]`);
-    if (radio) radio.checked = true;
 
     if (mode === 'login') {
         emailGroup.style.display = 'none';
@@ -374,26 +349,70 @@ function resetLoginForm() {
     switchPatientMode('login');
 }
 
-// --- Demo Credentials Autofill Helper ---
-function fillDemoCreds(role) {
-    switchAuthTab(role);
-    if (role === 'patient') {
-        switchPatientMode('login');
-        document.getElementById('auth-username').value = 'patient1';
-        document.getElementById('auth-password').value = 'patient123';
-    } else {
-        document.getElementById('auth-username').value = 'admin';
-        document.getElementById('auth-password').value = 'faculty123';
+// --- Auth submissions (Dual modes support) ---
+async function handleAuthSubmit(e) {
+    e.preventDefault();
+    const username = document.getElementById('auth-username').value.trim();
+    const password = document.getElementById('auth-password').value;
+    const email = document.getElementById('auth-email').value.trim();
+    
+    if (!username || !password) {
+        showToast("Missing Inputs", "Please enter both username and password.", "warning");
+        return;
     }
-    showToast("Credentials Filled", `Filled demo credentials for ${role}.`, "info");
+
+    if (APP_STATE.mode === 'online') {
+        // ONLINE MODE (RELIANT ON JAVA / MYSQL SERVER)
+        try {
+            if (APP_STATE.activeRoleTab === 'patient' && APP_STATE.patientMode === 'register') {
+                const res = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, email, role: 'PATIENT' })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    APP_STATE.sessionUser = { username: data.username, type: data.type };
+                    recordLocalLoginLog(data.username, data.type, '127.0.0.1', 'REGISTERED');
+                    updateHeaderUserMenu();
+                    showToast("Account Created", "Successfully registered inside MySQL DB.", "success");
+                    navigateToScreen('patient');
+                } else {
+                    showToast("Register Failed", data.error || "Username may already be taken.", "danger");
+                }
+            } else {
+                const role = APP_STATE.activeRoleTab.toUpperCase(); 
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, role })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    APP_STATE.sessionUser = { username: data.username, type: data.type };
+                    recordLocalLoginLog(data.username, data.type, '127.0.0.1', 'SUCCESS');
+                    updateHeaderUserMenu();
+                    showToast("Success", "Authenticated via SQL database.", "success");
+                    navigateToScreen(data.type);
+                } else {
+                    showToast("Access Denied", data.error || "Invalid credentials.", "danger");
+                }
+            }
+        } catch (err) {
+            console.warn("Auth submit online failed, switching to local offline fallback:", err);
+            APP_STATE.mode = 'offline';
+            loginOffline(username, password, email);
+        }
+    } else {
+        loginOffline(username, password, email);
+    }
 }
 
-// --- Offline Auth Processor ---
-function handleOfflineAuth(username, password, email, role) {
+function loginOffline(username, password, email) {
     const localUsers = getLocalUsers();
+    const role = APP_STATE.activeRoleTab.toUpperCase();
 
     if (APP_STATE.activeRoleTab === 'patient' && APP_STATE.patientMode === 'register') {
-        // Register inside local storage
         const userExists = localUsers.find(u => u.username.toLowerCase() === username.toLowerCase() && u.role === 'PATIENT');
         if (userExists) {
             showToast("Register Failed", "Username is already taken.", "danger");
@@ -404,81 +423,23 @@ function handleOfflineAuth(username, password, email, role) {
         saveLocalUsers(localUsers);
 
         APP_STATE.sessionUser = { username, type: 'patient' };
+        recordLocalLoginLog(username, 'PATIENT', '127.0.0.1', 'REGISTERED');
         saveMockSession(APP_STATE.sessionUser);
         updateHeaderUserMenu();
-        showToast("Account Created (Offline)", "Successfully registered in LocalStorage database.", "success");
+        showToast("Account Created", "Successfully registered.", "success");
         navigateToScreen('patient');
     } else {
-        // Login Validation Offline
         const matchedUser = localUsers.find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === password && u.role === role);
         if (matchedUser) {
             APP_STATE.sessionUser = { username: matchedUser.username, type: role.toLowerCase() };
+            recordLocalLoginLog(matchedUser.username, role, '127.0.0.1', 'SUCCESS');
             saveMockSession(APP_STATE.sessionUser);
             updateHeaderUserMenu();
-            showToast("Success", "Authenticated via LocalStorage database.", "success");
+            showToast("Success", "Authenticated successfully.", "success");
             navigateToScreen(role.toLowerCase());
         } else {
             showToast("Access Denied", "Incorrect credentials or account role mismatch.", "danger");
         }
-    }
-}
-
-// --- Auth submissions (Dual modes support) ---
-async function handleAuthSubmit(e) {
-    e.preventDefault();
-    const username = document.getElementById('auth-username').value.trim();
-    const password = document.getElementById('auth-password').value;
-    const email = document.getElementById('auth-email').value.trim();
-    const role = APP_STATE.activeRoleTab.toUpperCase(); 
-    
-    if (!username || !password) {
-        showToast("Missing Inputs", "Please enter both username and password.", "warning");
-        return;
-    }
-
-    if (APP_STATE.mode === 'online') {
-        try {
-            if (APP_STATE.activeRoleTab === 'patient' && APP_STATE.patientMode === 'register') {
-                const res = await apiFetch('/api/auth/register', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password, email, role: 'PATIENT' })
-                });
-                const data = await res.json().catch(() => ({}));
-                if (res.ok) {
-                    APP_STATE.sessionUser = { username: data.username, type: data.type };
-                    saveMockSession(APP_STATE.sessionUser);
-                    updateHeaderUserMenu();
-                    showToast("Account Created", "Successfully registered in database.", "success");
-                    navigateToScreen('patient');
-                } else {
-                    showToast("Register Failed", data.error || "Username may already be taken.", "danger");
-                }
-            } else {
-                const res = await apiFetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password, role })
-                });
-                const data = await res.json().catch(() => ({}));
-                if (res.ok) {
-                    APP_STATE.sessionUser = { username: data.username, type: data.type };
-                    saveMockSession(APP_STATE.sessionUser);
-                    updateHeaderUserMenu();
-                    showToast("Success", "Authenticated via server database.", "success");
-                    navigateToScreen(data.type);
-                } else {
-                    showToast("Access Denied", data.error || "Invalid credentials.", "danger");
-                }
-            }
-        } catch (err) {
-            console.warn("Backend server connection failed, falling back to offline mode:", err);
-            APP_STATE.mode = 'offline';
-            showToast("Offline Mode Active", "Backend server unreachable. Switched to offline LocalStorage mode.", "info");
-            handleOfflineAuth(username, password, email, role);
-        }
-    } else {
-        handleOfflineAuth(username, password, email, role);
     }
 }
 
@@ -490,24 +451,6 @@ function resetForgotForm() {
     document.getElementById('reset-code').value = '';
     document.getElementById('reset-new-password').value = '';
     document.getElementById('reset-confirm-password').value = '';
-}
-
-function executeOfflineForgot(email, userRole) {
-    const localUsers = getLocalUsers();
-    const userExists = localUsers.find(u => u.email === email && u.role === userRole.toUpperCase());
-    if (!userExists) {
-        showToast("Email Error", "No registered account matches this email & role.", "danger");
-        return;
-    }
-
-    const mockCode = String(Math.floor(100000 + Math.random() * 900000));
-    localStorage.setItem('mediflow_forgot_code', JSON.stringify({ email, code: mockCode, expires: Date.now() + 600000, username: userExists.username }));
-
-    document.getElementById('forgot-step-email').style.display = 'none';
-    document.getElementById('forgot-step-reset').style.display = 'block';
-    const feedbackEl = document.getElementById('forgot-code-alert-status');
-    feedbackEl.innerHTML = `⚠️ Local Verification Code Emulated!<br>Email: <b>${email}</b><br>Code: <b style="font-size:1.15rem; color:var(--text-primary); background:rgba(255,255,255,0.7); padding:0.1rem 0.5rem; border-radius:4px;">${mockCode}</b>`;
-    showToast("Code Generated", "Validation code generated locally.", "success");
 }
 
 async function handleForgotEmailSubmit(e) {
@@ -522,12 +465,12 @@ async function handleForgotEmailSubmit(e) {
 
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch('/api/auth/forgot-password', {
+            const res = await fetch('/api/auth/forgot-password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email, userType: userRole })
             });
-            const data = await res.json().catch(() => ({}));
+            const data = await res.json();
             if (res.ok) {
                 document.getElementById('forgot-step-email').style.display = 'none';
                 document.getElementById('forgot-step-reset').style.display = 'block';
@@ -538,32 +481,26 @@ async function handleForgotEmailSubmit(e) {
                 showToast("Email Error", data.error || "Email not found.", "danger");
             }
         } catch (err) {
-            console.warn("Forgot password server call failed, using offline fallback:", err);
-            APP_STATE.mode = 'offline';
-            executeOfflineForgot(email, userRole);
+            console.error(err);
+            showToast("Connection Problem", "Server connection timed out.", "danger");
         }
     } else {
-        executeOfflineForgot(email, userRole);
-    }
-}
+        // Offline Forgot flow
+        const localUsers = getLocalUsers();
+        const userExists = localUsers.find(u => u.email && u.email.trim().toLowerCase() === email.toLowerCase() && (u.role || '').toUpperCase() === userRole.toUpperCase());
+        if (!userExists) {
+            showToast("Email Error", "No registered account matches this email & role.", "danger");
+            return;
+        }
 
-function executeOfflineReset(email, code, newPassword) {
-    const codeRecord = JSON.parse(localStorage.getItem('mediflow_forgot_code'));
-    if (!codeRecord || codeRecord.email !== email || codeRecord.code !== code || Date.now() > codeRecord.expires) {
-        showToast("Reset Failed", "Invalid or expired verification code.", "danger");
-        return;
-    }
+        const mockCode = String(Math.floor(100000 + Math.random() * 900000));
+        localStorage.setItem('mediflow_forgot_code', JSON.stringify({ email, code: mockCode, expires: Date.now() + 600000, username: userExists.username }));
 
-    const localUsers = getLocalUsers();
-    const userObj = localUsers.find(u => u.username === codeRecord.username);
-    if (userObj) {
-        userObj.password = newPassword;
-        saveLocalUsers(localUsers);
-        localStorage.removeItem('mediflow_forgot_code');
-        showToast("Password Saved (Offline)", "Credential changed locally. Please login.", "success");
-        navigateToScreen('auth');
-    } else {
-        showToast("Error", "Internal user lookup failure.", "danger");
+        document.getElementById('forgot-step-email').style.display = 'none';
+        document.getElementById('forgot-step-reset').style.display = 'block';
+        const feedbackEl = document.getElementById('forgot-code-alert-status');
+        feedbackEl.innerHTML = `⚠️ Local Verification Code Emulated!<br>Email: <b>${email}</b><br>Code: <b style="font-size:1.15rem; color:var(--text-primary); background:rgba(255,255,255,0.7); padding:0.1rem 0.5rem; border-radius:4px;">${mockCode}</b>`;
+        showToast("Code Generated", "Validation code generated locally.", "success");
     }
 }
 
@@ -581,12 +518,12 @@ async function handleResetPasswordSubmit(e) {
 
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch('/api/auth/reset-password', {
+            const res = await fetch('/api/auth/reset-password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email, code, newPassword, confirmPassword })
             });
-            const data = await res.json().catch(() => ({}));
+            const data = await res.json();
             if (res.ok) {
                 showToast("Password Saved", "Reset completed. Please login.", "success");
                 navigateToScreen('auth');
@@ -594,12 +531,28 @@ async function handleResetPasswordSubmit(e) {
                 showToast("Reset Failed", data.error || "Verify token invalid.", "danger");
             }
         } catch (err) {
-            console.warn("Reset password server call failed, using offline fallback:", err);
-            APP_STATE.mode = 'offline';
-            executeOfflineReset(email, code, newPassword);
+            console.error(err);
+            showToast("System Error", "Reset password service experienced an error.", "danger");
         }
     } else {
-        executeOfflineReset(email, code, newPassword);
+        // Offline Reset flow
+        const codeRecord = JSON.parse(localStorage.getItem('mediflow_forgot_code'));
+        if (!codeRecord || !codeRecord.email || codeRecord.email.trim().toLowerCase() !== email.toLowerCase() || codeRecord.code !== code || Date.now() > codeRecord.expires) {
+            showToast("Reset Failed", "Invalid or expired verification code.", "danger");
+            return;
+        }
+
+        const localUsers = getLocalUsers();
+        const userObj = localUsers.find(u => u.username && u.username.toLowerCase() === (codeRecord.username || '').toLowerCase());
+        if (userObj) {
+            userObj.password = newPassword;
+            saveLocalUsers(localUsers);
+            localStorage.removeItem('mediflow_forgot_code');
+            showToast("Password Saved (Offline)", "Credential changed locally. Please login.", "success");
+            navigateToScreen('auth');
+        } else {
+            showToast("Error", "Internal user lookup failure.", "danger");
+        }
     }
 }
 
@@ -608,21 +561,14 @@ async function renderPatientDashboard() {
     let meds = [];
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch('/api/medicines');
-            if (res.ok) {
-                meds = await res.json();
-            } else {
-                meds = getLocalMedicines();
-            }
+            const res = await fetch('/api/medicines');
+            if (res.ok) meds = await res.json();
         } catch (err) {
-            console.warn("Fetch medicines online failed, falling back to local:", err);
-            meds = getLocalMedicines();
+            console.error("Fetch medicines online failed", err);
         }
     } else {
         meds = getLocalMedicines();
     }
-
-    APP_STATE.patientLoadedMeds = meds;
 
     const lowStock = meds.filter(m => m.quantity < 18);
 
@@ -683,247 +629,56 @@ async function renderPatientDashboard() {
             grid.appendChild(card);
         });
     }
+
+    // Refresh patient login audit table
+    loadPatientLoginLogs();
 }
 
-// --- HTML Escaping & Search Query Highlighting ---
-function escapeHtml(str) {
-    if (str === null || str === undefined) return '';
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
-function highlightMatch(text, query) {
-    if (!text) return '';
-    if (!query) return escapeHtml(text);
-    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(${escapedQuery})`, 'gi');
-    const parts = text.split(regex);
-    return parts.map(part => {
-        if (part.toLowerCase() === query.toLowerCase()) {
-            return `<span class="autocomplete-highlight">${escapeHtml(part)}</span>`;
-        }
-        return escapeHtml(part);
-    }).join('');
-}
-
-// --- Patient Autocomplete & Focus Handlers ---
-function handlePatientSearchFocus(inputElement) {
-    const input = inputElement || document.getElementById('patient-search-input');
-    const query = input ? input.value.trim() : '';
-    if (query) {
-        handlePatientSearchAutocomplete(query);
-    } else {
-        renderPatientQuickSuggestions();
-    }
-}
-
-function renderPatientQuickSuggestions() {
-    const dropdown = document.getElementById('patient-search-autocomplete');
-    if (!dropdown) return;
-    let meds = APP_STATE.patientLoadedMeds;
-    if (!meds || meds.length === 0) {
-        meds = getLocalMedicines();
-    }
-    if (!meds || meds.length === 0) {
-        dropdown.style.display = 'none';
-        return;
-    }
-
-    dropdown.innerHTML = '';
-    const header = document.createElement('div');
-    header.className = 'autocomplete-header';
-    header.innerHTML = `<span>Quick Catalog Suggestions</span><span>${meds.length} items</span>`;
-    dropdown.appendChild(header);
-
-    meds.slice(0, 6).forEach(m => {
-        const div = document.createElement('div');
-        div.className = 'autocomplete-row';
-        div.innerHTML = `
-            <div class="autocomplete-row-content">
-                <div class="autocomplete-row-title">${escapeHtml(m.name)}</div>
-                <div class="autocomplete-row-sub">${escapeHtml(m.details || 'No clinical notes.')}</div>
-            </div>
-            <div class="autocomplete-row-tags">
-                <span class="qty-pill">${m.quantity} strips</span>
-                <span class="badge ${m.available ? 'badge-success' : 'badge-danger'}" style="font-size:0.7rem; padding:0.15rem 0.4rem;">
-                    ${m.available ? 'Available' : 'Out'}
-                </span>
-            </div>
-        `;
-        div.onclick = () => {
-            const input = document.getElementById('patient-search-input');
-            if (input) input.value = m.name;
-            dropdown.style.display = 'none';
-            openMedicineDetailsModal(m.id);
-        };
-        dropdown.appendChild(div);
-    });
-    dropdown.style.display = 'block';
-}
-
+// --- Patient Autocomplete search ---
 async function handlePatientSearchAutocomplete(query) {
     const dropdown = document.getElementById('patient-search-autocomplete');
     if (!dropdown) return;
 
-    const trimmed = (query || '').toLowerCase().trim();
-    if (!trimmed) {
-        renderPatientQuickSuggestions();
+    query = query.toLowerCase().trim();
+    if (!query) {
+        dropdown.style.display = 'none';
         return;
     }
 
     let matches = [];
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch(`/api/medicines/search?q=${encodeURIComponent(trimmed)}`);
-            if (res.ok) {
-                matches = await res.json();
-            } else {
-                const localMeds = getLocalMedicines();
-                matches = localMeds.filter(m => m.name.toLowerCase().includes(trimmed) || (m.details && m.details.toLowerCase().includes(trimmed)));
-            }
+            const res = await fetch(`/api/medicines/search?q=${encodeURIComponent(query)}`);
+            if (res.ok) matches = await res.json();
         } catch (err) {
-            const localMeds = getLocalMedicines();
-            matches = localMeds.filter(m => m.name.toLowerCase().includes(trimmed) || (m.details && m.details.toLowerCase().includes(trimmed)));
+            console.error(err);
         }
     } else {
         const localMeds = getLocalMedicines();
-        matches = localMeds.filter(m => m.name.toLowerCase().includes(trimmed) || (m.details && m.details.toLowerCase().includes(trimmed)));
+        matches = localMeds.filter(m => m.name.toLowerCase().includes(query) || (m.details && m.details.toLowerCase().includes(query)));
     }
 
     dropdown.innerHTML = '';
     if (matches.length > 0) {
         dropdown.style.display = 'block';
-        const header = document.createElement('div');
-        header.className = 'autocomplete-header';
-        header.innerHTML = `<span>Search Results</span><span>${matches.length} found</span>`;
-        dropdown.appendChild(header);
-
         matches.forEach(m => {
             const div = document.createElement('div');
             div.className = 'autocomplete-row';
             div.innerHTML = `
-                <div class="autocomplete-row-content">
-                    <div class="autocomplete-row-title">${highlightMatch(m.name, trimmed)}</div>
-                    <div class="autocomplete-row-sub">${highlightMatch(m.details || '', trimmed)}</div>
-                </div>
-                <div class="autocomplete-row-tags">
-                    <span class="qty-pill">${m.quantity} strips</span>
-                    <span class="badge ${m.available ? 'badge-success' : 'badge-danger'}" style="font-size:0.7rem; padding:0.15rem 0.4rem;">
-                        ${m.available ? 'Available' : 'Out'}
-                    </span>
-                </div>
+                <span>${m.name}</span>
+                <span class="qty-pill">${m.quantity} strips</span>
             `;
             div.onclick = () => {
-                const input = document.getElementById('patient-search-input');
-                if (input) input.value = m.name;
-                dropdown.style.display = 'none';
                 openMedicineDetailsModal(m.id);
-            };
-            dropdown.appendChild(div);
-        });
-    } else {
-        dropdown.style.display = 'block';
-        dropdown.innerHTML = `<div style="padding:0.75rem 1.25rem; font-size:0.9rem; color:var(--text-secondary);">No results match "${escapeHtml(trimmed)}"</div>`;
-    }
-}
-
-// --- Faculty Interactive Search & Autocomplete Handlers ---
-let facultySearchDebounceTimer = null;
-
-function handleFacultySearchInput(value) {
-    const val = value !== undefined ? value : (document.getElementById('faculty-search-input')?.value || '');
-    
-    // Realtime search with debounce for dashboard catalog
-    clearTimeout(facultySearchDebounceTimer);
-    facultySearchDebounceTimer = setTimeout(() => {
-        renderFacultyDashboard();
-    }, 150);
-
-    // Dynamic autocomplete dropdown
-    handleFacultySearchAutocomplete(val);
-}
-
-function handleFacultySearchFocus(inputElement) {
-    const input = inputElement || document.getElementById('faculty-search-input');
-    const val = input ? input.value : '';
-    handleFacultySearchAutocomplete(val);
-}
-
-async function handleFacultySearchAutocomplete(query) {
-    const dropdown = document.getElementById('faculty-search-autocomplete');
-    if (!dropdown) return;
-
-    const trimmed = (query || '').toLowerCase().trim();
-    let matches = [];
-
-    const meds = (APP_STATE.facultyLoadedMeds && APP_STATE.facultyLoadedMeds.length > 0)
-        ? APP_STATE.facultyLoadedMeds
-        : getLocalMedicines();
-
-    if (!trimmed) {
-        if (!meds || meds.length === 0) {
-            dropdown.style.display = 'none';
-            return;
-        }
-        matches = meds.slice(0, 6);
-    } else {
-        matches = meds.filter(m => m.name.toLowerCase().includes(trimmed) || (m.details && m.details.toLowerCase().includes(trimmed)));
-    }
-
-    dropdown.innerHTML = '';
-    if (matches.length > 0) {
-        dropdown.style.display = 'block';
-        const header = document.createElement('div');
-        header.className = 'autocomplete-header';
-        header.innerHTML = trimmed
-            ? `<span>Matching Stock Items</span><span>${matches.length} found</span>`
-            : `<span>Quick Stock Jump</span><span>${matches.length} items</span>`;
-        dropdown.appendChild(header);
-
-        matches.forEach(m => {
-            const div = document.createElement('div');
-            div.className = 'autocomplete-row';
-            div.innerHTML = `
-                <div class="autocomplete-row-content">
-                    <div class="autocomplete-row-title">${trimmed ? highlightMatch(m.name, trimmed) : escapeHtml(m.name)}</div>
-                    <div class="autocomplete-row-sub">${trimmed ? highlightMatch(m.details || '', trimmed) : escapeHtml(m.details || '')}</div>
-                </div>
-                <div class="autocomplete-row-tags">
-                    <span class="qty-pill">${m.quantity} strips</span>
-                    <span class="badge ${m.available ? 'badge-success' : 'badge-danger'}" style="font-size:0.7rem; padding:0.15rem 0.4rem;">
-                        ${m.available ? 'Available' : 'Out'}
-                    </span>
-                </div>
-            `;
-            div.onclick = () => {
-                const input = document.getElementById('faculty-search-input');
-                if (input) input.value = m.name;
+                document.getElementById('patient-search-input').value = m.name;
                 dropdown.style.display = 'none';
-                renderFacultyDashboard().then(() => {
-                    highlightFacultyCard(m.id);
-                });
             };
             dropdown.appendChild(div);
         });
     } else {
         dropdown.style.display = 'block';
-        dropdown.innerHTML = `<div style="padding:0.75rem 1.25rem; font-size:0.9rem; color:var(--text-secondary);">No stock items match "${escapeHtml(trimmed)}"</div>`;
+        dropdown.innerHTML = `<div style="padding:0.75rem 1.25rem; font-size:0.9rem; color:var(--text-secondary);">No results match "${query}"</div>`;
     }
-}
-
-function highlightFacultyCard(id) {
-    const cards = document.querySelectorAll('.faculty-card');
-    cards.forEach(card => {
-        if (card.querySelector(`button[onclick*="openEditMedicineModal(${id})"]`)) {
-            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            card.classList.add('card-highlight-pulse');
-            setTimeout(() => card.classList.remove('card-highlight-pulse'), 2000);
-        }
-    });
 }
 
 // --- Faculty Control Center rendering ---
@@ -934,34 +689,18 @@ async function renderFacultyDashboard() {
     if (APP_STATE.mode === 'online') {
         try {
             const requestUrl = query ? `/api/medicines/search?q=${encodeURIComponent(query)}` : '/api/medicines';
-            const res = await apiFetch(requestUrl);
-            if (res.ok) {
-                meds = await res.json();
-            } else {
-                const localMeds = getLocalMedicines();
-                meds = query 
-                    ? localMeds.filter(m => (m.name && m.name.toLowerCase().includes(query.toLowerCase())) || (m.details && m.details.toLowerCase().includes(query.toLowerCase())))
-                    : localMeds;
-            }
+            const res = await fetch(requestUrl);
+            if (res.ok) meds = await res.json();
         } catch (err) {
-            console.warn("Faculty fetch online failed, falling back to local:", err);
-            const localMeds = getLocalMedicines();
-            meds = query 
-                ? localMeds.filter(m => (m.name && m.name.toLowerCase().includes(query.toLowerCase())) || (m.details && m.details.toLowerCase().includes(query.toLowerCase())))
-                : localMeds;
+            console.error("Faculty fetch online failed", err);
         }
     } else {
         const localMeds = getLocalMedicines();
         meds = query 
-            ? localMeds.filter(m => (m.name && m.name.toLowerCase().includes(query.toLowerCase())) || (m.details && m.details.toLowerCase().includes(query.toLowerCase())))
+            ? localMeds.filter(m => m.name.toLowerCase().includes(query.toLowerCase()))
             : localMeds;
     }
 
-    APP_STATE.facultyLoadedMeds = meds;
-    const counterEl = document.getElementById('faculty-inv-counter');
-    if (counterEl) {
-        counterEl.textContent = `Total Loaded: ${meds.length}`;
-    }
     const lowStock = meds.filter(m => m.quantity < 18);
 
     // 1. Populate Stock warning list
@@ -974,7 +713,7 @@ async function renderFacultyDashboard() {
             banner.style.display = 'block';
             lowStock.forEach(m => {
                 const li = document.createElement('li');
-                li.textContent = `🚨 ${m.name} - Remaining: ${m.quantity} strips. Restock required immediately!`;
+                li.textContent = `🚨 ${m.name} - Only ${m.quantity} strips in archive. Restock requested immediately.`;
                 lowStockList.appendChild(li);
             });
         } else {
@@ -982,12 +721,15 @@ async function renderFacultyDashboard() {
         }
     }
 
-    // 2. Populate Management Grid
+    // 2. Count metrics
+    document.getElementById('faculty-inv-counter').textContent = `Total Loaded: ${meds.length}`;
+
+    // 3. Grid elements rendering
     const grid = document.getElementById('faculty-meds-grid');
     if (grid) {
         grid.innerHTML = '';
         if (meds.length === 0) {
-            grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding:3rem; color:var(--text-secondary);">No medicine records found.</div>`;
+            grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding:3rem; color:var(--text-secondary);">Search matches no items.</div>`;
             return;
         }
 
@@ -996,45 +738,52 @@ async function renderFacultyDashboard() {
             const isLowStock = m.quantity < 18;
             const isOutOfStock = m.quantity === 0;
 
-            card.className = `faculty-card ${isOutOfStock ? 'out-of-stock-border' : (isLowStock ? 'low-stock-warning-border' : '')} fade-in-anim`;
-            
-            const badgeElement = m.available 
-                ? `<span class="badge badge-success">Available</span>` 
-                : `<span class="badge badge-danger">Out of Stock</span>`;
+            card.className = `med-card ${isOutOfStock ? 'out-of-stock-border' : (isLowStock ? 'low-stock-warning-border' : '')} fade-in-anim`;
+            card.style.cursor = 'default';
 
             card.innerHTML = `
-                <div class="faculty-card-header">
-                    <h4>${m.name}</h4>
-                    ${badgeElement}
+                <div class="med-card-info" onclick="openMedicineDetailsModal(${m.id})" style="cursor:pointer; margin-bottom: 0.5rem;" title="Click to view full details">
+                    <h4 style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>${m.name}</span>
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                    </h4>
+                    <p style="font-size:0.825rem; color:var(--text-muted); white-space: nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom: 0.5rem;">${m.details || 'No catalog details provided.'}</p>
+                </div>
+                
+                <div class="med-card-row" style="margin-top: 0.25rem;">
+                    <span class="med-card-label">Active Visibility:</span>
+                    <div class="custom-toggle-switch ${m.available ? 'active' : ''}" onclick="toggleAvailability(${m.id}, ${m.available})">
+                        <div class="toggle-slider-outer">
+                            <div class="toggle-slider-inner"></div>
+                        </div>
+                        <span class="toggle-label-span">${m.available ? 'Available' : 'Unavailable'}</span>
+                    </div>
                 </div>
 
-                <div class="faculty-card-body">
-                    <p class="description-text">${m.details || 'No specific clinical instructions provided.'}</p>
-                    
-                    <div class="management-controls">
-                        <div class="control-label">Inventory Level (Strips):</div>
-                        <div class="qty-stepper-box">
-                            <button type="button" class="stepper-btn" onclick="modifyQuantityStep(${m.id}, -1)">-</button>
-                            <input type="number" id="qty-input-${m.id}" class="stepper-input" value="${m.quantity}" min="0" onchange="modifyQuantityInput(${m.id}, this.value)">
-                            <button type="button" class="stepper-btn" onclick="modifyQuantityStep(${m.id}, 1)">+</button>
-                        </div>
-                    </div>
-
-                    <div style="margin-top: 1rem;">
-                        <button type="button" class="btn btn-secondary btn-block btn-small" onclick="toggleAvailability(${m.id}, ${m.available})">
-                            ${m.available ? 'Mark Out of Stock' : 'Mark Available'}
-                        </button>
+                <div class="qty-action-block">
+                    <div class="qty-control-wrapper">
+                        <span class="med-card-label" style="flex:1;">Inventory Count:</span>
+                        <button class="qty-btn" onclick="modifyQuantityStep(${m.id}, ${m.quantity}, -1)">–</button>
+                        <input type="number" class="qty-input-box" id="qty-input-${m.id}" value="${m.quantity}" min="0" onchange="modifyQuantityInput(${m.id}, this.value)">
+                        <button class="qty-btn" onclick="modifyQuantityStep(${m.id}, ${m.quantity}, 1)">+</button>
                     </div>
 
                     <div class="card-action-keys">
-                        <button type="button" class="btn btn-secondary btn-small" style="flex:1;" onclick="openEditMedicineModal(${m.id})">Edit Details</button>
-                        <button type="button" class="btn btn-danger btn-small" onclick="promptDeleteMedicine(${m.id})">Delete</button>
+                        <button class="btn btn-secondary btn-small" style="flex:1;" onclick="openEditMedicineModal(${m.id})">Edit Details</button>
+                        <button class="btn btn-danger btn-small" onclick="promptDeleteMedicine(${m.id}, '${m.name}')">Delete</button>
                     </div>
                 </div>
             `;
             grid.appendChild(card);
         });
     }
+
+    // Refresh live faculty login audit table
+    loadLoginLogs();
+}
+
+function handleFacultySearchInput() {
+    renderFacultyDashboard();
 }
 
 // --- Faculty Collapsible toggle ---
@@ -1053,18 +802,133 @@ function toggleAddMedicineCollapsible() {
     }
 }
 
-// --- Offline Medicine Creation ---
-function executeLocalCreateMedicine(name, qtyVal, details, available) {
-    const localMeds = getLocalMedicines();
-    const nextId = localMeds.length > 0 ? Math.max(...localMeds.map(m => m.id)) + 1 : 1;
-    const newMed = { id: nextId, name, quantity: qtyVal, details, available };
-    localMeds.push(newMed);
-    saveLocalMedicines(localMeds);
+// --- Login History Tables logic ---
+async function loadLoginLogs() {
+    const tbody = document.getElementById('faculty-login-logs-tbody');
+    if (!tbody) return;
 
-    showToast("Product Registered (Local)", `"${name}" saved to cache.`, "success");
-    document.getElementById('add-medicine-form').reset();
-    toggleAddMedicineCollapsible();
-    renderFacultyDashboard();
+    let logs = [];
+    if (APP_STATE.mode === 'online') {
+        try {
+            const res = await fetch('/api/logs', {
+                headers: getAuthHeaders(false)
+            });
+            if (res.ok) {
+                logs = await res.json();
+            } else {
+                logs = getLocalLoginLogs();
+            }
+        } catch (err) {
+            logs = getLocalLoginLogs();
+        }
+    } else {
+        logs = getLocalLoginLogs();
+    }
+
+    tbody.innerHTML = '';
+    if (!logs || logs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:1.5rem; color:var(--text-muted);">No login records found in the database.</td></tr>`;
+        return;
+    }
+
+    logs.forEach((log, index) => {
+        const tr = document.createElement('tr');
+        const roleLower = (log.role || 'patient').toLowerCase();
+        const roleBadge = `<span class="table-badge table-badge-${roleLower}">${(log.role || 'PATIENT').toUpperCase()}</span>`;
+        const isRegistered = (log.status || '').toUpperCase() === 'REGISTERED';
+        const statusBadge = `<span class="table-badge ${isRegistered ? 'table-badge-registered' : 'table-badge-success'}">${log.status || 'SUCCESS'}</span>`;
+        const timeStr = log.loginTimeStr || log.loginTime || 'Recent';
+
+        tr.innerHTML = `
+            <td><strong>#${log.id || (logs.length - index)}</strong></td>
+            <td><strong>${escapeHtml(log.username)}</strong></td>
+            <td>${roleBadge}</td>
+            <td>${escapeHtml(timeStr)}</td>
+            <td><code>${escapeHtml(log.ipAddress || '127.0.0.1')}</code></td>
+            <td>${statusBadge}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+async function loadPatientLoginLogs() {
+    const tbody = document.getElementById('patient-login-logs-tbody');
+    if (!tbody) return;
+
+    let logs = [];
+    if (APP_STATE.mode === 'online') {
+        try {
+            const res = await fetch('/api/logs', {
+                headers: getAuthHeaders(false)
+            });
+            if (res.ok) {
+                logs = await res.json();
+            } else {
+                const username = APP_STATE.sessionUser ? APP_STATE.sessionUser.username.toLowerCase() : '';
+                logs = getLocalLoginLogs().filter(l => l.username.toLowerCase() === username);
+            }
+        } catch (err) {
+            const username = APP_STATE.sessionUser ? APP_STATE.sessionUser.username.toLowerCase() : '';
+            logs = getLocalLoginLogs().filter(l => l.username.toLowerCase() === username);
+        }
+    } else {
+        const username = APP_STATE.sessionUser ? APP_STATE.sessionUser.username.toLowerCase() : '';
+        logs = getLocalLoginLogs().filter(l => l.username.toLowerCase() === username);
+    }
+
+    tbody.innerHTML = '';
+    if (!logs || logs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-muted);">No login sessions recorded yet for your account.</td></tr>`;
+        return;
+    }
+
+    logs.forEach(log => {
+        const tr = document.createElement('tr');
+        const roleLower = (log.role || 'patient').toLowerCase();
+        const roleBadge = `<span class="table-badge table-badge-${roleLower}">${(log.role || 'PATIENT').toUpperCase()}</span>`;
+        const isRegistered = (log.status || '').toUpperCase() === 'REGISTERED';
+        const statusBadge = `<span class="table-badge ${isRegistered ? 'table-badge-registered' : 'table-badge-success'}">${log.status || 'SUCCESS'}</span>`;
+        const timeStr = log.loginTimeStr || log.loginTime || 'Recent';
+
+        tr.innerHTML = `
+            <td><strong>${escapeHtml(log.username)}</strong></td>
+            <td>${roleBadge}</td>
+            <td>${escapeHtml(timeStr)}</td>
+            <td><code>${escapeHtml(log.ipAddress || '127.0.0.1')}</code></td>
+            <td>${statusBadge}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function toggleLoginLogsCollapsible() {
+    const body = document.getElementById('body-collapsible-login-logs');
+    const header = document.getElementById('header-collapsible-login-logs');
+    if (!body || !header) return;
+    const isOpen = body.classList.contains('open');
+    if (isOpen) {
+        body.classList.remove('open');
+        header.classList.remove('open');
+    } else {
+        body.classList.add('open');
+        header.classList.add('open');
+        loadLoginLogs();
+    }
+}
+
+function togglePatientLogsCollapsible() {
+    const body = document.getElementById('body-collapsible-patient-logs');
+    const header = document.getElementById('header-collapsible-patient-logs');
+    if (!body || !header) return;
+    const isOpen = body.classList.contains('open');
+    if (isOpen) {
+        body.classList.remove('open');
+        header.classList.remove('open');
+    } else {
+        body.classList.add('open');
+        header.classList.add('open');
+        loadPatientLoginLogs();
+    }
 }
 
 // --- Register new medicine ---
@@ -1084,14 +948,14 @@ async function handleRegisterMedicineSubmit(e) {
 
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch('/api/medicines', {
+            const res = await fetch('/api/medicines', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({ name, quantity: qtyVal, details, available })
             });
 
             if (res.ok) {
-                showToast("Product Registered", `"${name}" saved to database.`, "success");
+                showToast("Product Registered", `"${name}" saved to MySQL.`, "success");
                 document.getElementById('add-medicine-form').reset();
                 toggleAddMedicineCollapsible();
                 renderFacultyDashboard();
@@ -1099,64 +963,59 @@ async function handleRegisterMedicineSubmit(e) {
                 showToast("Create Failed", "Unauthorized or database error.", "danger");
             }
         } catch (err) {
-            console.warn("Server connection failed, saving locally:", err);
-            APP_STATE.mode = 'offline';
-            executeLocalCreateMedicine(name, qtyVal, details, available);
+            console.error(err);
+            showToast("Error", "Server connection failed.", "danger");
         }
     } else {
-        executeLocalCreateMedicine(name, qtyVal, details, available);
+        // Offline creation
+        const localMeds = getLocalMedicines();
+        const nextId = localMeds.length > 0 ? Math.max(...localMeds.map(m => m.id)) + 1 : 1;
+        const newMed = { id: nextId, name, quantity: qtyVal, details, available };
+        localMeds.push(newMed);
+        saveLocalMedicines(localMeds);
+
+        showToast("Product Registered (Local)", `"${name}" saved to cache.`, "success");
+        document.getElementById('add-medicine-form').reset();
+        toggleAddMedicineCollapsible();
+        renderFacultyDashboard();
     }
 }
 
 // --- Medicine updates ---
 async function toggleAvailability(id, currentStat) {
-    const newStatus = (currentStat === true || currentStat === 'true') ? false : true;
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch(`/api/medicines/${id}`, {
+            const res = await fetch(`/api/medicines/${id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ available: newStatus })
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ available: !currentStat })
             });
             if (res.ok) {
                 renderFacultyDashboard();
-                showToast("Visibility Changed", `Stock marked as ${newStatus ? 'Available' : 'Out of Stock'}.`, "success");
+                showToast("Visibility Changed", "Stock visibility adjusted.", "success");
             } else {
                 showToast("Action Forbidden", "Access denied.", "danger");
             }
         } catch (err) {
-            console.warn("Toggle online failed, using local:", err);
-            const localMeds = getLocalMedicines();
-            const item = localMeds.find(m => m.id === id);
-            if (item) {
-                item.available = newStatus;
-                saveLocalMedicines(localMeds);
-                renderFacultyDashboard();
-                showToast("Visibility Changed (Local)", `Stock marked as ${newStatus ? 'Available' : 'Out of Stock'}.`, "success");
-            }
+            console.error(err);
         }
     } else {
         // Offline Toggle
         const localMeds = getLocalMedicines();
         const item = localMeds.find(m => m.id === id);
         if (item) {
-            item.available = newStatus;
+            item.available = !currentStat;
             saveLocalMedicines(localMeds);
             renderFacultyDashboard();
-            showToast("Visibility Changed (Local)", `Stock marked as ${newStatus ? 'Available' : 'Out of Stock'}.`, "success");
+            showToast("Visibility Changed (Local)", "Stock visibility adjusted.", "success");
         }
     }
 }
 
-async function modifyQuantityStep(id, step) {
-    const input = document.getElementById(`qty-input-${id}`);
-    let currentQty = input ? parseInt(input.value) : null;
-    if (currentQty === null || isNaN(currentQty)) {
-        const item = (APP_STATE.facultyLoadedMeds || []).find(m => m.id === id);
-        currentQty = item ? item.quantity : 0;
-    }
-    const nextVal = Math.max(0, currentQty + step);
-    if (input) input.value = nextVal;
+async function modifyQuantityStep(id, currentQty, step) {
+    const nextVal = currentQty + step;
+    if (nextVal < 0) return;
+    
     await updateQuantityValueOnServer(id, nextVal);
 }
 
@@ -1174,9 +1033,9 @@ async function modifyQuantityInput(id, value) {
 async function updateQuantityValueOnServer(id, quantity) {
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch(`/api/medicines/${id}`, {
+            const res = await fetch(`/api/medicines/${id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({ quantity })
             });
             if (res.ok) {
@@ -1186,15 +1045,7 @@ async function updateQuantityValueOnServer(id, quantity) {
                 showToast("Sync Error", "Unable to update quantity.", "danger");
             }
         } catch (err) {
-            console.warn("Quantity update online failed, saving locally:", err);
-            const localMeds = getLocalMedicines();
-            const item = localMeds.find(m => m.id === id);
-            if (item) {
-                item.quantity = quantity;
-                saveLocalMedicines(localMeds);
-                renderFacultyDashboard();
-                showToast("Quantity Saved (Local)", "Inventory count modified.", "success");
-            }
+            console.error(err);
         }
     } else {
         // Offline update
@@ -1231,11 +1082,10 @@ async function openMedicineDetailsModal(id) {
     let item = null;
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch(`/api/medicines/${id}`);
+            const res = await fetch(`/api/medicines/${id}`);
             if (res.ok) item = await res.json();
-            else item = getLocalMedicines().find(m => m.id === id);
         } catch (err) {
-            item = getLocalMedicines().find(m => m.id === id);
+            console.error(err);
         }
     } else {
         const localMeds = getLocalMedicines();
@@ -1277,11 +1127,10 @@ async function openEditMedicineModal(id) {
     let item = null;
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch(`/api/medicines/${id}`);
+            const res = await fetch(`/api/medicines/${id}`);
             if (res.ok) item = await res.json();
-            else item = getLocalMedicines().find(m => m.id === id);
         } catch (err) {
-            item = getLocalMedicines().find(m => m.id === id);
+            console.error(err);
         }
     } else {
         const localMeds = getLocalMedicines();
@@ -1309,31 +1158,22 @@ async function handleEditMedicineSubmit(e) {
 
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch(`/api/medicines/${id}`, {
+            const res = await fetch(`/api/medicines/${id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({ name, details })
             });
 
             if (res.ok) {
                 closeModal('modal-edit-med');
                 renderFacultyDashboard();
-                showToast("Product Modified", "Database record updated.", "success");
+                showToast("Product Modified", "MySQL database updated.", "success");
             } else {
                 showToast("Edit Forbidden", "Check credentials status.", "danger");
             }
         } catch (err) {
-            console.warn("Update online failed, saving locally:", err);
-            const localMeds = getLocalMedicines();
-            const item = localMeds.find(m => m.id === id);
-            if (item) {
-                item.name = name;
-                item.details = details;
-                saveLocalMedicines(localMeds);
-                closeModal('modal-edit-med');
-                renderFacultyDashboard();
-                showToast("Product Modified (Local)", "Cache records updated.", "success");
-            }
+            console.error(err);
+            showToast("Error", "Update query failed.", "danger");
         }
     } else {
         // Offline Edit
@@ -1353,13 +1193,7 @@ async function handleEditMedicineSubmit(e) {
 // --- Delete stock item ---
 function promptDeleteMedicine(id, name) {
     APP_STATE.deleteTargetId = id;
-    let safeName = name;
-    if (!safeName && APP_STATE.facultyLoadedMeds) {
-        const found = APP_STATE.facultyLoadedMeds.find(m => m.id === id);
-        if (found) safeName = found.name;
-    }
-    const escapedName = (safeName || 'this medicine').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    document.getElementById('delete-confirm-prompt-msg').innerHTML = `Are you sure you want to permanently delete <b style="color:var(--text-primary)">"${escapedName}"</b> from inventory database records?<br>This action cannot be undone.`;
+    document.getElementById('delete-confirm-prompt-msg').innerHTML = `Are you sure you want to permanently delete <b style="color:var(--text-primary)">"${name}"</b> from inventory database records?<br>This action cannot be undone.`;
     openModal('modal-delete-confirm');
 }
 
@@ -1369,24 +1203,21 @@ async function executeMedicineDelete() {
 
     if (APP_STATE.mode === 'online') {
         try {
-            const res = await apiFetch(`/api/medicines/${id}`, { method: 'DELETE' });
+            const res = await fetch(`/api/medicines/${id}`, { 
+                method: 'DELETE',
+                headers: getAuthHeaders(false)
+            });
             if (res.ok) {
                 closeModal('modal-delete-confirm');
                 APP_STATE.deleteTargetId = null;
                 renderFacultyDashboard();
-                showToast("Stock Item Deleted", "Medicine deleted successfully from database.", "success");
+                showToast("Stock Item Deleted", "Medicine deleted successfully from MySQL.", "success");
             } else {
                 showToast("Forbidden Operation", "Check your staff credentials.", "danger");
             }
         } catch (err) {
-            console.warn("Delete online failed, deleting locally:", err);
-            const localMeds = getLocalMedicines();
-            const nextMeds = localMeds.filter(m => m.id !== id);
-            saveLocalMedicines(nextMeds);
-            closeModal('modal-delete-confirm');
-            APP_STATE.deleteTargetId = null;
-            renderFacultyDashboard();
-            showToast("Stock Item Deleted (Local)", "Medicine removed from local cache.", "success");
+            console.error(err);
+            showToast("Error", "Server delete query failed.", "danger");
         }
     } else {
         // Offline delete

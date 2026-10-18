@@ -1,4 +1,18 @@
-/target/
-/.vscode/
+# Compiled class files
+target/
 *.class
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Operating System files
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log

@@ -1,37 +1,45 @@
-# MediFlow Startup Script
+# MediFlow Startup Script - MySQL & Core Java JDBC Edition
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
+if (-not $root) { $root = (Get-Location).Path }
 
 # Free port 8080 if an older server instance is still bound to it
 $existingPort = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
 if ($existingPort) {
-    $existingPid = $existingPort.OwningProcess | Select-Object -First 1
-    $proc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-    if ($proc -and $proc.ProcessName -eq 'java') {
-        Write-Host "Stopping previous server instance on port 8080 (PID $existingPid)..." -ForegroundColor Yellow
-        Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 1
+    $pidsToKill = $existingPort.OwningProcess | Select-Object -Unique
+    foreach ($pId in $pidsToKill) {
+        $proc = Get-Process -Id $pId -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ProcessName -match '^java') {
+            Write-Host "Stopping previous server instance on port 8080 (PID $pId)..." -ForegroundColor Yellow
+            Stop-Process -Id $pId -Force -ErrorAction SilentlyContinue
+        }
     }
+    Start-Sleep -Seconds 1
+}
+
+Write-Host "Resolving Java dependencies (MySQL Connector/J & BCrypt)..." -ForegroundColor Cyan
+$libJars = Get-ChildItem -Path "$root\lib\*.jar" -ErrorAction SilentlyContinue
+if ($libJars) {
+    $jars = ($libJars | ForEach-Object { $_.FullName }) -join ";"
+} else {
+    $m2Jars = Get-ChildItem -Path "$env:USERPROFILE\.m2\repository" -Filter "*.jar" -Recurse -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -match "mysql" -or $_.Name -match "jbcrypt"
+    }
+    $jars = ($m2Jars | ForEach-Object { $_.FullName }) -join ";"
 }
 
 Write-Host "Compiling Java backend sources..." -ForegroundColor Cyan
-$jars = (Get-ChildItem -Path "$env:USERPROFILE\.m2\repository" -Filter "*.jar" -Recurse | Where-Object { 
-    $_.FullName -notmatch "slf4j-api-1\.7" -and 
-    $_.FullName -notmatch "maven-" -and 
-    $_.FullName -notmatch "plexus-" -and
-    $_.FullName -notmatch "surefire" -and
-    $_.FullName -notmatch "devtools" -and
-    $_.FullName -notmatch "qdox"
-} | ForEach-Object { $_.FullName }) -join ";"
-
 if (-not (Test-Path "$root\target\classes")) {
     New-Item -ItemType Directory -Path "$root\target\classes" -Force | Out-Null
 }
 
 $sources = (Get-ChildItem -Path "$root\src\main\java" -Filter "*.java" -Recurse | ForEach-Object { $_.FullName })
-javac --release 21 -cp $jars -d "$root\target\classes" $sources
+javac -cp $jars -d "$root\target\classes" $sources
 
-# Copy static frontend files to target and resources
+# Copy static frontend files (app.js, index.html, style.css)
+if (-not (Test-Path "$root\src\main\resources\static")) {
+    New-Item -ItemType Directory -Path "$root\src\main\resources\static" -Force | Out-Null
+}
 if (-not (Test-Path "$root\target\classes\static")) {
     New-Item -ItemType Directory -Path "$root\target\classes\static" -Force | Out-Null
 }
@@ -45,14 +53,24 @@ if (-not (Test-Path "$root\target\classes\static")) {
         } else {
             Copy-Item -Path $rootFile -Destination $resFile -Force
         }
+    } elseif (Test-Path $rootFile) {
+        Copy-Item -Path $rootFile -Destination $resFile -Force
     }
     if (Test-Path $rootFile) {
         Copy-Item -Path $rootFile -Destination $tgtFile -Force
     }
 }
 
+# Copy database properties to resources and target classes
+$dbPropRoot = "$root\database.properties"
+if (Test-Path $dbPropRoot) {
+    Copy-Item -Path $dbPropRoot -Destination "$root\src\main\resources\database.properties" -Force
+    Copy-Item -Path $dbPropRoot -Destination "$root\target\classes\database.properties" -Force
+}
+
 Write-Host "========================================================" -ForegroundColor Green
 Write-Host "  Launching MediFlow on http://localhost:8080/          " -ForegroundColor Green
+Write-Host "  Database Engine: MySQL Database (via standard JDBC)   " -ForegroundColor Cyan
 Write-Host "  Demo Credentials:                                    " -ForegroundColor Yellow
 Write-Host "    Patient Access:  patient1 / patient123             " -ForegroundColor Yellow
 Write-Host "    Faculty Staff:   admin / faculty123                " -ForegroundColor Yellow
@@ -71,4 +89,4 @@ Start-Job -ScriptBlock {
 } | Out-Null
 
 $env:CLASSPATH = "$root\target\classes;$root\src\main\resources;$jars"
-java com.mediflow.pharmacy.PharmacyApplication
+java -cp "$root\target\classes;$root\src\main\resources;$jars" com.mediflow.pharmacy.PharmacyApplication

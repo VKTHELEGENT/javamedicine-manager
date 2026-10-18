@@ -1,36 +1,34 @@
 package com.mediflow.pharmacy.model;
 
-import jakarta.persistence.*;
-
-@Entity
-@Table(name = "users")
+/**
+ * CST 205 OOPJ - Module 2: Class, Object, Constructors and Encapsulation
+ * Represents a User in the pharmacy management system (Patient or Faculty).
+ */
 public class User {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(nullable = false, unique = true)
     private String username;
-
-    @Column(name = "password_hash", nullable = false)
     private String passwordHash;
-
-    @Column(nullable = true)
     private String email;
-
-    @Column(nullable = false)
     private String role; // "PATIENT" or "FACULTY"
 
-    // Default constructor for JPA
+    // Default constructor
     public User() {
+        this.role = "PATIENT";
     }
 
+    // Parameterized constructor without ID
     public User(String username, String passwordHash, String email, String role) {
         this.username = username;
         this.passwordHash = passwordHash;
-        this.email = email;
-        this.role = role;
+        this.email = email != null ? email : "";
+        this.role = role != null ? role.toUpperCase() : "PATIENT";
+    }
+
+    // Parameterized constructor with ID
+    public User(Long id, String username, String passwordHash, String email, String role) {
+        this(username, passwordHash, email, role); // Constructor chaining
+        this.id = id;
     }
 
     // Getters and Setters
@@ -71,6 +69,11 @@ public class User {
     }
 
     public void setRole(String role) {
-        this.role = role;
+        this.role = role != null ? role.toUpperCase() : "PATIENT";
+    }
+
+    @Override
+    public String toString() {
+        return "User[id=" + id + ", username=" + username + ", role=" + role + ", email=" + email + "]";
     }
 }
